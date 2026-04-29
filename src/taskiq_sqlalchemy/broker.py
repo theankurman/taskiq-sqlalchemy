@@ -1,12 +1,13 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from uuid import uuid7
 
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import BrokerMessage
 from taskiq.abc import AsyncBroker
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from taskiq.abc.serializer import TaskiqSerializer
 from taskiq.acks import AckableMessage
@@ -37,7 +38,6 @@ class SQLAlchemyBroker(AsyncBroker):
             if isinstance(connection_string, str)
             else connection_string
         )
-        self.session = async_sessionmaker(self.engine)
         self.serializer = serializer or PickleSerializer()
 
         self._create_task_model(table_name)
@@ -59,55 +59,88 @@ class SQLAlchemyBroker(AsyncBroker):
         async with self.engine.begin() as conn:
             await conn.run_sync(lambda c: self.db_base.metadata.create_all(c))
 
+        await super().startup()
+
     async def kick(self, message: BrokerMessage) -> None:
-        async with self.session() as session, session.begin():
-            db_message = await session.scalar(
-                sa.select(self.model).filter(self.model.task_id == message.task_id)
-            )
-            if not db_message:
-                db_message = self.model()
-                db_message.task_id = message.task_id
-                session.add(db_message)
-
-            db_message.task_name = message.task_name
-            db_message.message = message.message
-            db_message.labels = message.labels
-            db_message.priority = int(message.labels.get("priority", 0))
-
-            _delay_seconds = float(message.labels.get("delay", 0))
-            db_message.delay_to = datetime.now(UTC) + timedelta(seconds=_delay_seconds)
-
-            await session.commit()
+        _delay_seconds = float(message.labels.get("delay", 0))
+        stmt = sa.insert(self.model).values(
+            {
+                self.model.task_id: message.task_id,
+                self.model.task_name: message.task_name,
+                self.model.message: message.message,
+                self.model.labels: message.labels,
+                self.model.priority: int(message.labels.get("priority", 0)),
+                self.model.delay_to: datetime.now(UTC)
+                + timedelta(seconds=_delay_seconds),
+            }
+        )
+        async with self.engine.begin() as conn:
+            await conn.execute(stmt)
 
     async def listen(self) -> AsyncGenerator[bytes | AckableMessage, None]:
         while True:
-            query = (
-                sa.select(self.model)
-                .filter(
-                    self.model.delay_to <= datetime.now(UTC),
-                    self.model.status == self.model.StatusChoices.PENDING,
+            async with self.engine.begin() as conn:
+                cursor_result = await conn.execute(
+                    sa.select(self.model.task_id)
+                    .where(
+                        self.model.delay_to <= datetime.now(UTC),
+                        self.model.status == self.model.StatusChoices.PENDING,
+                        self.model.claimed_by.is_(None),
+                    )
+                    .order_by(
+                        self.model.priority.desc(),
+                        self.model.created_at,
+                    )
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
                 )
-                .order_by(
-                    self.model.priority.desc(),
-                    self.model.created_at,
-                )
-                .with_for_update(skip_locked=True)
-            )
-            async with self.session() as session, session.begin():
-                db_message = await session.scalar(query)
-                if not db_message:
+                row = cursor_result.first()
+                if row is None:
                     await asyncio.sleep(1)
                     continue
 
-                db_message.status = self.model.StatusChoices.PROCESSING
+                (task_id,) = row._tuple()
 
-                data = db_message.message
-                await session.commit()
+                worker_id = uuid7().hex
+                # the with for update does not work on sqlite
+                # claim the task, so multiple workers dont work on the same task
+                await conn.execute(
+                    sa.update(self.model)
+                    .where(self.model.task_id == task_id)
+                    .values({self.model.claimed_by: worker_id})
+                )
 
-            async def _ack(m=db_message):
-                async with self.session() as session, session.begin():
-                    session.add(m)
-                    m.status = self.model.StatusChoices.DONE
-                    await session.commit()
+                # see if the task is still available
+                cursor_result = await conn.execute(
+                    sa.select(self.model.message).where(
+                        self.model.task_id == task_id,
+                        self.model.claimed_by == worker_id,
+                        self.model.status == self.model.StatusChoices.PENDING,
+                    )
+                )
+                row = cursor_result.first()
+                if not row:
+                    # another worker got the task
+                    continue
 
-            yield AckableMessage(data=data, ack=_ack)
+                (message_bytes,) = row._tuple()
+
+                # update message status
+                await conn.execute(
+                    sa.update(self.model)
+                    .where(
+                        self.model.task_id == task_id,
+                        self.model.claimed_by == worker_id,
+                    )
+                    .values({self.model.status: self.model.StatusChoices.PROCESSING})
+                )
+
+            async def _ack(task_id=task_id):
+                async with self.engine.begin() as conn:
+                    await conn.execute(
+                        sa.update(self.model)
+                        .where(self.model.task_id == task_id)
+                        .values({self.model.status: self.model.StatusChoices.DONE})
+                    )
+
+            yield AckableMessage(data=message_bytes, ack=_ack)

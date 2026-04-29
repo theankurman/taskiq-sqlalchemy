@@ -28,3 +28,5 @@ class MessageTableMixin:
 
     delay_to: Mapped[datetime]
     priority: Mapped[int]
+
+    claimed_by: Mapped[str | None]
