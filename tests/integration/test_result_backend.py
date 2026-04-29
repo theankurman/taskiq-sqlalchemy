@@ -26,7 +26,7 @@ async def broker_no_keep(db_engine):
 
 
 async def test_result_table_created(db_engine: AsyncEngine):
-    table_name = secrets.token_hex()
+    table_name = secrets.token_hex(16)
     backend = SQLAlchemyResultBackend(db_engine, table_name=table_name)
 
     # get list of tables

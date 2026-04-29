@@ -34,7 +34,7 @@ async def get_next_message(broker, timeout=1):
 
 
 async def test_message_table_created(db_engine: AsyncEngine):
-    table_name = secrets.token_hex()
+    table_name = secrets.token_hex(16)
 
     async with db_engine.begin() as conn:
         meta = sa.MetaData()
