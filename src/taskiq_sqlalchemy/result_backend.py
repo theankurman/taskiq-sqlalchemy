@@ -9,7 +9,6 @@ from taskiq.abc import AsyncResultBackend
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, async_sessionmaker
 import sqlalchemy as sa
 from .models import ResultTableMixin
-from .exceptions import ResultIsMissingError
 
 
 _ResultType = TypeVar("_ResultType")
@@ -108,9 +107,7 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
                 sa.select(self.model).filter(self.model.task_id == task_id)
             )
             if not db_result:
-                raise ResultIsMissingError(
-                    f"Result not found for task with id {task_id}"
-                )
+                raise ValueError(f"Result not found for task with id {task_id}")
             result_bytes = db_result.result
             result_deserialized = self.serializer.loadb(result_bytes)
             result = model_validate(TaskiqResult[_ResultType], result_deserialized)
