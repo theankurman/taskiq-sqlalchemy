@@ -8,6 +8,23 @@ from taskiq.exceptions import ResultGetError
 from taskiq_sqlalchemy.result_backend import SQLAlchemyResultBackend
 
 
+async def _broker(db_engine, keep_results: bool):
+    result_backend = SQLAlchemyResultBackend(db_engine, keep_results=keep_results)
+    broker = InMemoryBroker().with_result_backend(result_backend)
+    await result_backend.startup()
+    return broker
+
+
+@pytest.fixture()
+async def broker_keep(db_engine):
+    return await _broker(db_engine, True)
+
+
+@pytest.fixture
+async def broker_no_keep(db_engine):
+    return await _broker(db_engine, False)
+
+
 async def test_when_startup_called__then_table_created(db_engine: AsyncEngine):
     table_name = secrets.token_hex()
     backend = SQLAlchemyResultBackend(db_engine, table_name=table_name)
@@ -28,10 +45,10 @@ async def test_when_startup_called__then_table_created(db_engine: AsyncEngine):
         assert meta.tables.get(table_name) is not None
 
 
-async def test_when_task_is_processed__then_result_is_stored(broker: AsyncBroker):
+async def test_when_task_is_processed__then_result_is_stored(broker_keep: AsyncBroker):
     val = secrets.token_hex()
 
-    @broker.task
+    @broker_keep.task
     async def _test_task():
         return val
 
@@ -47,14 +64,11 @@ async def test_when_task_is_processed__then_result_is_stored(broker: AsyncBroker
 
 
 async def test_given_keep_results_false__when_result_is_accessed__then_result_is_removed(
-    db_engine,
+    broker_no_keep: AsyncBroker,
 ):
     # GIVEN: keep_results = False
-    result_backend = SQLAlchemyResultBackend(db_engine, keep_results=False)
-    broker = InMemoryBroker().with_result_backend(result_backend)
-    await result_backend.startup()
 
-    @broker.task
+    @broker_no_keep.task
     def _test_task():
         return 1
 
@@ -70,10 +84,10 @@ async def test_given_keep_results_false__when_result_is_accessed__then_result_is
 
 
 async def test_given_keep_results_true__when_result_is_accessed__then_result_is_kept(
-    broker: AsyncBroker,
+    broker_keep: AsyncBroker,
 ):
     # GIVEN: keep_results = True
-    @broker.task
+    @broker_keep.task
     def _test_task():
         return 1
 
