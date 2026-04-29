@@ -1,10 +1,6 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
 
-class DBBase(DeclarativeBase):
-    pass
-
-
-class ResultTableMixin(DeclarativeBase):
+class ResultTableMixin:
     task_id: Mapped[str] = mapped_column(primary_key=True)
     result: Mapped[bytes]

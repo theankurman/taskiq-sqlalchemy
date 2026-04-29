@@ -1,5 +1,6 @@
 from typing import TypeVar, override
 
+from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import TaskiqResult
 from taskiq.compat import model_dump, model_validate
 from taskiq.serializers import PickleSerializer
@@ -7,7 +8,7 @@ from taskiq.abc.serializer import TaskiqSerializer
 from taskiq.abc import AsyncResultBackend
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, async_sessionmaker
 import sqlalchemy as sa
-from .models import ResultTableMixin, DBBase
+from .models import ResultTableMixin
 from .exceptions import ResultIsMissingError
 
 
@@ -17,7 +18,7 @@ _ResultType = TypeVar("_ResultType")
 class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
     def __init__(
         self,
-        engine: str | AsyncEngine,
+        connection_string: str | AsyncEngine,
         keep_results: bool = True,
         table_name: str = "taskiq_results",
         serializer: TaskiqSerializer | None = None,
@@ -34,17 +35,19 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         """
         super().__init__()
 
-        if isinstance(engine, str):
-            engine = create_async_engine(engine)
-        self.engine = engine
-        self.session = async_sessionmaker(engine)
+        if isinstance(connection_string, str):
+            connection_string = create_async_engine(connection_string)
+        self.engine = connection_string
+        self.session = async_sessionmaker(connection_string)
         self.serializer = serializer or PickleSerializer()
         self.keep_results = keep_results
 
         self._create_result_model(table_name)
 
     def _create_result_model(self, table_name: str):
-        class ResultModel(DBBase, ResultTableMixin):
+        self.db_base: type[DeclarativeBase] = declarative_base(class_registry={})
+
+        class ResultModel(self.db_base, ResultTableMixin):
             __tablename__ = table_name
 
         self.model = ResultModel
@@ -57,7 +60,7 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         Creates the result table if it does not exist.
         """
         async with self.engine.begin() as conn:
-            await conn.run_sync(lambda c: DBBase.metadata.create_all(c))
+            await conn.run_sync(lambda c: self.db_base.metadata.create_all(c))
 
     @override
     async def set_result(self, task_id: str, result: TaskiqResult[_ResultType]) -> None:
@@ -76,7 +79,7 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
             )
             if db_result is None:
                 db_result = self.model()
-                db_result.task_id
+                db_result.task_id = task_id
                 session.add(db_result)
 
             db_result.result = result_bytes
@@ -101,19 +104,19 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
             TaskiqResult
         """
         async with self.session() as session, session.begin():
-            task = await session.scalar(
+            db_result = await session.scalar(
                 sa.select(self.model).filter(self.model.task_id == task_id)
             )
-            if not task:
+            if not db_result:
                 raise ResultIsMissingError(
                     f"Result not found for task with id {task_id}"
                 )
-            result_bytes = task.result
+            result_bytes = db_result.result
             result_deserialized = self.serializer.loadb(result_bytes)
             result = model_validate(TaskiqResult[_ResultType], result_deserialized)
 
             if not self.keep_results:
-                await session.delete(result)
+                await session.delete(db_result)
                 await session.commit()
 
             return result
