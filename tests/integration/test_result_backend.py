@@ -1,12 +1,11 @@
 import secrets
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 from taskiq import AsyncBroker, InMemoryBroker
 from taskiq.exceptions import ResultGetError
 from taskiq_sqlalchemy.result_backend import SQLAlchemyResultBackend
+from tests.integration.conftest import check_table_exists
 
 
 async def _broker(db_engine, keep_results: bool):
@@ -24,16 +23,6 @@ async def broker_keep(db_engine):
 @pytest.fixture
 async def broker_no_keep(db_engine):
     return await _broker(db_engine, False)
-
-
-async def check_table_exists(db_engine: AsyncEngine | Engine, table_name: str):
-    meta = sa.MetaData()
-    if isinstance(db_engine, Engine):
-        meta.reflect(db_engine)
-    else:
-        async with db_engine.connect() as conn:
-            await conn.run_sync(meta.reflect)
-    return table_name in meta.tables
 
 
 async def test_result_table_created(db_engine: AsyncEngine):

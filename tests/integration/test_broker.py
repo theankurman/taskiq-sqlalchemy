@@ -4,9 +4,9 @@ import secrets
 import pytest
 from sqlalchemy import Engine
 from taskiq import AckableMessage, AsyncBroker
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 from taskiq_sqlalchemy.broker import SQLAlchemyBroker
+from tests.integration.conftest import check_table_exists
 
 
 @pytest.fixture
@@ -31,17 +31,6 @@ async def get_next_message(broker, timeout=1):
         return message
 
     return await asyncio.wait_for(_get(), timeout)
-
-
-async def check_table_exists(db_engine: Engine | AsyncEngine, table_name: str):
-    meta = sa.MetaData()
-    if isinstance(db_engine, Engine):
-        meta.reflect(db_engine)
-    else:
-        async with db_engine.begin() as conn:
-            await conn.run_sync(meta.reflect)
-
-    return table_name in meta.tables
 
 
 async def test_message_table_created(db_engine: Engine | AsyncEngine):
@@ -82,14 +71,14 @@ async def test_message_removed(broker, task):
 
 async def test_delayed_message(broker, task):
     # WHEN: delayed task awaited
-    await task.kicker().with_labels(delay=2).kiq()
+    await task.kicker().with_labels(delay=5).kiq()
 
     # THEN: message should not exist immediately
     with pytest.raises(TimeoutError):
         await get_next_message(broker)
 
     # THEN: message should exist after delay
-    message = await get_next_message(broker, timeout=2)
+    message = await get_next_message(broker, timeout=5)
     assert isinstance(message, AckableMessage)
 
 

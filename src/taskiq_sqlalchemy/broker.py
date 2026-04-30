@@ -8,7 +8,6 @@ from sqlalchemy import Engine
 import sqlalchemy
 from sqlalchemy import create_engine
 import sqlalchemy.exc
-import sqlalchemy.ext
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import BrokerMessage
