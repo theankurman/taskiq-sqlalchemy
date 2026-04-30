@@ -31,7 +31,7 @@ class SQLAlchemyBroker(AsyncBroker):
         Construct a new SQLAlchemyBroker.
 
         Args:
-            connection_string: sqlalchemy asyncio compatible connection string, or an instance of sqlalchemy AsyncEngine.
+            connection_string: sqlalchemy connection string, or an instance of sqlalchemy Engine or AsyncEngine.
             table_name: the name of the table used to store messages.
             serializer: the serializer class used to (de)serialize the message instance.
         """
