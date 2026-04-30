@@ -1,10 +1,19 @@
 [project]
 name = "taskiq-sqlalchemy"
 version = "0.1.0"
-description = "Add your description here"
+description = "SQLAlchemy integration for taskiq"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = ["sqlalchemy>=2.0.49", "taskiq>=0.12.2"]
+keywords = ["taskiq", "sqlalchemy", "tasks", "broker", "result_backend"]
+
+[project.urls]
+Repository = "https://github.com/theankurman/taskiq-sqlalchemy"
+
+[build-system]
+build-backend = "uv_build"
+requires = ["uv_build"]
+
 
 [dependency-groups]
 dev = [
