@@ -12,7 +12,7 @@ Repository = "https://github.com/theankurman/taskiq-sqlalchemy"
 
 [build-system]
 build-backend = "uv_build"
-requires = ["uv_build"]
+requires = ["uv_build<0.12"]
 
 
 [dependency-groups]
