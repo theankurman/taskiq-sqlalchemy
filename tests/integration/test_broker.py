@@ -2,11 +2,12 @@ import asyncio
 import secrets
 
 import pytest
-from taskiq import AckableMessage, AsyncBroker
-import sqlalchemy as sa
+from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
-from taskiq.compat import model_validate
+from taskiq import AckableMessage, AsyncBroker
+
 from taskiq_sqlalchemy.broker import SQLAlchemyBroker
+from tests.integration.conftest import check_table_exists
 
 
 @pytest.fixture
@@ -33,28 +34,23 @@ async def get_next_message(broker, timeout=1):
     return await asyncio.wait_for(_get(), timeout)
 
 
-async def test_message_table_created(db_engine: AsyncEngine):
+async def test_message_table_created(db_engine: Engine | AsyncEngine):
     table_name = secrets.token_hex(16)
 
-    async with db_engine.begin() as conn:
-        meta = sa.MetaData()
+    # check table does not exist
+    assert not await check_table_exists(db_engine, table_name)
 
-        # check table does not exist
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is None
+    # WHEN: broker initialized
+    broker = SQLAlchemyBroker(db_engine, table_name=table_name)
+    await broker.startup()
 
-        # WHEN: broker initialized
-        broker = SQLAlchemyBroker(db_engine, table_name=table_name)
-        await broker.startup()
-
-        # THEN: table created
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is not None
+    # THEN: table created
+    assert await check_table_exists(db_engine, table_name)
 
 
 async def test_message_saved(broker, task):
     # WHEN: task awaited
-    res = await task.kiq()
+    await task.kiq()
 
     # THEN: message saved
     message = await get_next_message(broker)
@@ -76,14 +72,14 @@ async def test_message_removed(broker, task):
 
 async def test_delayed_message(broker, task):
     # WHEN: delayed task awaited
-    await task.kicker().with_labels(delay=2).kiq()
+    await task.kicker().with_labels(delay=5).kiq()
 
     # THEN: message should not exist immediately
     with pytest.raises(TimeoutError):
         await get_next_message(broker)
 
     # THEN: message should exist after delay
-    message = await get_next_message(broker, timeout=2)
+    message = await get_next_message(broker, timeout=5)
     assert isinstance(message, AckableMessage)
 
 

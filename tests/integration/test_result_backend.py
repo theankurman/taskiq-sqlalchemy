@@ -1,11 +1,12 @@
 import secrets
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
 from taskiq import AsyncBroker, InMemoryBroker
 from taskiq.exceptions import ResultGetError
+
 from taskiq_sqlalchemy.result_backend import SQLAlchemyResultBackend
+from tests.integration.conftest import check_table_exists
 
 
 async def _broker(db_engine, keep_results: bool):
@@ -30,19 +31,13 @@ async def test_result_table_created(db_engine: AsyncEngine):
     backend = SQLAlchemyResultBackend(db_engine, table_name=table_name)
 
     # get list of tables
-    async with db_engine.connect() as conn:
-        meta = sa.MetaData()
+    assert not await check_table_exists(db_engine, table_name)
 
-        # check table does not already exist
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is None
+    # WHEN: startup called
+    await backend.startup()
 
-        # WHEN: startup called
-        await backend.startup()
-
-        # THEN: table created
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is not None
+    # THEN: table created
+    assert await check_table_exists(db_engine, table_name)
 
 
 async def test_result_stored(broker_keep: AsyncBroker):
