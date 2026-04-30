@@ -7,16 +7,16 @@ from testcontainers.postgres import PostgresContainer
 @pytest.fixture(
     scope="session",
     params=[
-        "sqlite",
+        "sqlite_async",
         "sqlite_sync",
-        "postgres",
+        "postgres_async",
         "postgres_sync",
     ],
 )
 def db_engine(request):
     dbname = request.param
     match dbname:
-        case "sqlite":
+        case "sqlite_async":
             db = None
             url = "sqlite+aiosqlite:///:memory:"
             engine = create_async_engine(url)
@@ -24,7 +24,7 @@ def db_engine(request):
             db = None
             url = "sqlite:///:memory:"
             engine = create_engine(url)
-        case "postgres":
+        case "postgres_async":
             db = PostgresContainer()
             db.start()
             url = db.get_connection_url(driver="psycopg")

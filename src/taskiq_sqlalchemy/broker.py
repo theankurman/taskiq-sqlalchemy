@@ -4,11 +4,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import sqlalchemy as sa
+from sqlalchemy import Engine
+import sqlalchemy
+from sqlalchemy import create_engine
+import sqlalchemy.exc
+import sqlalchemy.ext
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import BrokerMessage
 from taskiq.abc import AsyncBroker
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-
 from taskiq.abc.serializer import TaskiqSerializer
 from taskiq.acks import AckableMessage
 from taskiq.serializers import PickleSerializer
@@ -19,7 +23,7 @@ from taskiq_sqlalchemy.models import MessageTableMixin
 class SQLAlchemyBroker(AsyncBroker):
     def __init__(
         self,
-        connection_string: str | AsyncEngine,
+        connection_string: str | AsyncEngine | Engine,
         table_name: str = "taskiq_messages",
         serializer: TaskiqSerializer | None = None,
     ) -> None:
@@ -33,11 +37,12 @@ class SQLAlchemyBroker(AsyncBroker):
         """
         super().__init__()
 
-        self.engine = (
-            create_async_engine(connection_string)
-            if isinstance(connection_string, str)
-            else connection_string
-        )
+        if isinstance(connection_string, str):
+            try:
+                connection_string = create_async_engine(connection_string)
+            except sqlalchemy.exc.InvalidRequestError:
+                connection_string = create_engine(connection_string)
+        self.engine = connection_string
         self.serializer = serializer or PickleSerializer()
 
         self._create_task_model(table_name)
@@ -56,13 +61,18 @@ class SQLAlchemyBroker(AsyncBroker):
 
         Creates the message table if it does not exist.
         """
-        async with self.engine.begin() as conn:
-            await conn.run_sync(lambda c: self.db_base.metadata.create_all(c))
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                self.db_base.metadata.create_all(conn)
+        else:
+            async with self.engine.begin() as conn:
+                await conn.run_sync(self.db_base.metadata.create_all)
 
         await super().startup()
 
     async def kick(self, message: BrokerMessage) -> None:
         _delay_seconds = float(message.labels.get("delay", 0))
+        print(message.task_id)
         stmt = sa.insert(self.model).values(
             {
                 self.model.task_id: message.task_id,
@@ -74,73 +84,111 @@ class SQLAlchemyBroker(AsyncBroker):
                 + timedelta(seconds=_delay_seconds),
             }
         )
-        async with self.engine.begin() as conn:
-            await conn.execute(stmt)
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                conn.execute(stmt)
+        else:
+            async with self.engine.begin() as conn:
+                await conn.execute(stmt)
 
     async def listen(self) -> AsyncGenerator[bytes | AckableMessage, None]:
+
+        select_statement = (
+            sa.select(self.model.task_id)
+            .where(
+                self.model.delay_to <= sa.bindparam("now"),
+                self.model.status == self.model.StatusChoices.PENDING,
+                self.model.claimed_by.is_(None),
+            )
+            .order_by(
+                self.model.priority.desc(),
+                self.model.created_at,
+            )
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+
+        def _get_claim_statement(task_id, worker_id):
+            return (
+                sa.update(self.model)
+                .where(self.model.task_id == task_id)
+                .values({self.model.claimed_by: worker_id})
+            )
+
+        def _get_bytes_statement(task_id, worker_id):
+            return sa.select(self.model.message).where(
+                self.model.task_id == task_id,
+                self.model.claimed_by == worker_id,
+                self.model.status == self.model.StatusChoices.PENDING,
+            )
+
+        def _get_update_status_statement(task_id, worker_id):
+            return (
+                sa.update(self.model)
+                .where(
+                    self.model.task_id == task_id, self.model.claimed_by == worker_id
+                )
+                .values({self.model.status: self.model.StatusChoices.PROCESSING})
+            )
+
+        def _get_ack_statement(task_id):
+            return (
+                sa.update(self.model)
+                .where(self.model.task_id == task_id)
+                .values({self.model.status: self.model.StatusChoices.DONE})
+            )
+
+        worker_id = uuid7().hex
         while True:
-            async with self.engine.begin() as conn:
-                cursor_result = await conn.execute(
-                    sa.select(self.model.task_id)
-                    .where(
-                        self.model.delay_to <= datetime.now(UTC),
-                        self.model.status == self.model.StatusChoices.PENDING,
-                        self.model.claimed_by.is_(None),
-                    )
-                    .order_by(
-                        self.model.priority.desc(),
-                        self.model.created_at,
-                    )
-                    .limit(1)
-                    .with_for_update(skip_locked=True)
-                )
-                row = cursor_result.first()
-                if row is None:
-                    await asyncio.sleep(1)
-                    continue
-
-                (task_id,) = row._tuple()
-
-                worker_id = uuid7().hex
-                # the with for update does not work on sqlite
-                # claim the task, so multiple workers dont work on the same task
-                await conn.execute(
-                    sa.update(self.model)
-                    .where(self.model.task_id == task_id)
-                    .values({self.model.claimed_by: worker_id})
-                )
-
-                # see if the task is still available
-                cursor_result = await conn.execute(
-                    sa.select(self.model.message).where(
-                        self.model.task_id == task_id,
-                        self.model.claimed_by == worker_id,
-                        self.model.status == self.model.StatusChoices.PENDING,
-                    )
-                )
-                row = cursor_result.first()
-                if not row:
-                    # another worker got the task
-                    continue
-
-                (message_bytes,) = row._tuple()
-
-                # update message status
-                await conn.execute(
-                    sa.update(self.model)
-                    .where(
-                        self.model.task_id == task_id,
-                        self.model.claimed_by == worker_id,
-                    )
-                    .values({self.model.status: self.model.StatusChoices.PROCESSING})
-                )
+            if isinstance(self.engine, Engine):
+                with self.engine.begin() as conn:
+                    # get
+                    task_id = conn.execute(
+                        select_statement.params(now=datetime.now(UTC))
+                    ).scalar_one_or_none()
+                    if not task_id:
+                        await asyncio.sleep(1)
+                        continue
+                    # claim
+                    conn.execute(_get_claim_statement(task_id, worker_id))
+                    # get bytes
+                    message_bytes = conn.execute(
+                        _get_bytes_statement(task_id, worker_id)
+                    ).scalar_one_or_none()
+                    if not message_bytes:
+                        await asyncio.sleep(1)
+                        continue
+                    # update status
+                    conn.execute(_get_update_status_statement(task_id, worker_id))
+            else:
+                async with self.engine.begin() as conn:
+                    # get
+                    task_id = (
+                        await conn.execute(
+                            select_statement.params(now=datetime.now(UTC))
+                        )
+                    ).scalar_one_or_none()
+                    if not task_id:
+                        await asyncio.sleep(1)
+                        continue
+                    # claim
+                    await conn.execute(_get_claim_statement(task_id, worker_id))
+                    # get bytes
+                    message_bytes = (
+                        await conn.execute(_get_bytes_statement(task_id, worker_id))
+                    ).scalar_one_or_none()
+                    if not message_bytes:
+                        await asyncio.sleep(1)
+                        continue
+                    # update status
+                    await conn.execute(_get_update_status_statement(task_id, worker_id))
 
             async def _ack(task_id=task_id):
-                async with self.engine.begin() as conn:
-                    await conn.execute(
-                        sa.update(self.model)
-                        .where(self.model.task_id == task_id)
-                        .values({self.model.status: self.model.StatusChoices.DONE})
-                    )
+                if isinstance(self.engine, Engine):
+                    with self.engine.begin() as conn:
+                        conn.execute(_get_ack_statement(task_id))
+                else:
+                    async with self.engine.begin() as conn:
+                        await conn.execute(_get_ack_statement(task_id))
 
             yield AckableMessage(data=message_bytes, ack=_ack)

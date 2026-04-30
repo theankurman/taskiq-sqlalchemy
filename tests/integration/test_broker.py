@@ -2,10 +2,10 @@ import asyncio
 import secrets
 
 import pytest
+from sqlalchemy import Engine
 from taskiq import AckableMessage, AsyncBroker
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine
-from taskiq.compat import model_validate
 from taskiq_sqlalchemy.broker import SQLAlchemyBroker
 
 
@@ -33,23 +33,29 @@ async def get_next_message(broker, timeout=1):
     return await asyncio.wait_for(_get(), timeout)
 
 
-async def test_message_table_created(db_engine: AsyncEngine):
+async def check_table_exists(db_engine: Engine | AsyncEngine, table_name: str):
+    meta = sa.MetaData()
+    if isinstance(db_engine, Engine):
+        meta.reflect(db_engine)
+    else:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(meta.reflect)
+
+    return table_name in meta.tables
+
+
+async def test_message_table_created(db_engine: Engine | AsyncEngine):
     table_name = secrets.token_hex(16)
 
-    async with db_engine.begin() as conn:
-        meta = sa.MetaData()
+    # check table does not exist
+    assert not await check_table_exists(db_engine, table_name)
 
-        # check table does not exist
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is None
+    # WHEN: broker initialized
+    broker = SQLAlchemyBroker(db_engine, table_name=table_name)
+    await broker.startup()
 
-        # WHEN: broker initialized
-        broker = SQLAlchemyBroker(db_engine, table_name=table_name)
-        await broker.startup()
-
-        # THEN: table created
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is not None
+    # THEN: table created
+    assert await check_table_exists(db_engine, table_name)
 
 
 async def test_message_saved(broker, task):

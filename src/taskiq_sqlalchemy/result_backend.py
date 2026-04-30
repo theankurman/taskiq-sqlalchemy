@@ -31,7 +31,7 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         Construct a new result backend.
 
         Args:
-            engine: sqlalchemy asyncio-compatible connection string or an instance of sqlalchemy AsyncEngine.
+            engine: sqlalchemy connection string or an instance of sqlalchemy Engine or AsyncEngine .
             keep_results: flag to not remove results after reading.
             table_name: the name of the table to create for result storage.
             serializer: the serializer class to (de)serialize the result instance.

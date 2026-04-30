@@ -26,14 +26,14 @@ async def broker_no_keep(db_engine):
     return await _broker(db_engine, False)
 
 
-async def get_table_list(db_engine: AsyncEngine | Engine):
+async def check_table_exists(db_engine: AsyncEngine | Engine, table_name: str):
     meta = sa.MetaData()
     if isinstance(db_engine, Engine):
         meta.reflect(db_engine)
     else:
         async with db_engine.connect() as conn:
             await conn.run_sync(meta.reflect)
-    return meta.tables
+    return table_name in meta.tables
 
 
 async def test_result_table_created(db_engine: AsyncEngine):
@@ -41,15 +41,13 @@ async def test_result_table_created(db_engine: AsyncEngine):
     backend = SQLAlchemyResultBackend(db_engine, table_name=table_name)
 
     # get list of tables
-    tables = await get_table_list(db_engine)
-    assert tables.get(table_name) is None
+    assert not await check_table_exists(db_engine, table_name)
 
     # WHEN: startup called
     await backend.startup()
 
     # THEN: table created
-    tables = await get_table_list(db_engine)
-    assert tables.get(table_name) is not None
+    assert await check_table_exists(db_engine, table_name)
 
 
 async def test_result_stored(broker_keep: AsyncBroker):
