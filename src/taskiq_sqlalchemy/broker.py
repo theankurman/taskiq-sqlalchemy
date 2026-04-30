@@ -3,11 +3,10 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
-import sqlalchemy as sa
-from sqlalchemy import Engine
 import sqlalchemy
-from sqlalchemy import create_engine
+import sqlalchemy as sa
 import sqlalchemy.exc
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import BrokerMessage

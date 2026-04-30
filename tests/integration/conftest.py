@@ -1,10 +1,10 @@
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
-from testcontainers.postgres import PostgresContainer
-from testcontainers.mysql import MySqlContainer
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from testcontainers.mssql import SqlServerContainer
+from testcontainers.mysql import MySqlContainer
+from testcontainers.postgres import PostgresContainer
 
 
 @pytest.fixture(

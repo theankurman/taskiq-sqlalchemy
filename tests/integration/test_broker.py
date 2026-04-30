@@ -3,8 +3,9 @@ import secrets
 
 import pytest
 from sqlalchemy import Engine
-from taskiq import AckableMessage, AsyncBroker
 from sqlalchemy.ext.asyncio import AsyncEngine
+from taskiq import AckableMessage, AsyncBroker
+
 from taskiq_sqlalchemy.broker import SQLAlchemyBroker
 from tests.integration.conftest import check_table_exists
 
@@ -49,7 +50,7 @@ async def test_message_table_created(db_engine: Engine | AsyncEngine):
 
 async def test_message_saved(broker, task):
     # WHEN: task awaited
-    res = await task.kiq()
+    await task.kiq()
 
     # THEN: message saved
     message = await get_next_message(broker)

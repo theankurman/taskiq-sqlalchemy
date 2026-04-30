@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 from taskiq import AsyncBroker, InMemoryBroker
 from taskiq.exceptions import ResultGetError
+
 from taskiq_sqlalchemy.result_backend import SQLAlchemyResultBackend
 from tests.integration.conftest import check_table_exists
 
