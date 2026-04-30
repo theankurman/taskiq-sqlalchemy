@@ -11,8 +11,8 @@ import asyncio
 
 from taskiq_sqlalchemy import SQLAlchemyBroker, SQLAlchemyResultBackend
 
-# can be a sqlalchemy async compatible connection string or a sqlalchemy AsyncEngine instance
-connection_string = "sqlite+aiosqlite:///tasks.db"
+# can be a sqlalchemy connection string or a instance of sqlalchemy Engine or AsyncEngine
+connection_string = "sqlite:///tasks.db"
 
 
 result_backend = SQLAlchemyResultBackend(connection_string)
@@ -34,3 +34,14 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+## Tests
+This library has been tested against the following database and drivers:
+- SQLite: sqlite(sync), aiosqlite(async)
+- Postgres: psycopg(sync), psycopg(async)
+- Mysql: pymysql(sync)
+- SQLServer: pymssql(sync)
+
+## Considerations
+Although both sync and async engines are supported, you should prefer to use async engines where possible as the sync methods block while reading the database.
+
