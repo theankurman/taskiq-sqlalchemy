@@ -49,9 +49,7 @@ async def test_result_stored(broker_keep: AsyncBroker):
 
     # WHEN: task is processed
     kicker = await _test_task.kiq()
-    print("kicker sent")
     result = await kicker.wait_result()
-    print("result got")
 
     # THEN: result is stored
     assert not result.is_err

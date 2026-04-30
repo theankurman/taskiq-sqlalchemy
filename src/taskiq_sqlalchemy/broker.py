@@ -70,7 +70,6 @@ class SQLAlchemyBroker(AsyncBroker):
 
     async def kick(self, message: BrokerMessage) -> None:
         _delay_seconds = float(message.labels.get("delay", 0))
-        print(message.task_id)
         stmt = sa.insert(self.model).values(
             {
                 self.model.task_id: message.task_id,
