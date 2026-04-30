@@ -1,15 +1,20 @@
-from typing import TypeVar, override
+from typing import TypeVar, cast, override
 
+import sqlalchemy as sa
+from sqlalchemy import Engine
+import sqlalchemy
+from sqlalchemy import create_engine
+import sqlalchemy.exc
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, declarative_base
 from taskiq import TaskiqResult
+from taskiq.abc import AsyncResultBackend
+from taskiq.abc.serializer import TaskiqSerializer
 from taskiq.compat import model_dump, model_validate
 from taskiq.serializers import PickleSerializer
-from taskiq.abc.serializer import TaskiqSerializer
-from taskiq.abc import AsyncResultBackend
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-import sqlalchemy as sa
-from .models import ResultTableMixin
 
+from .models import ResultTableMixin
 
 _ResultType = TypeVar("_ResultType")
 
@@ -17,7 +22,7 @@ _ResultType = TypeVar("_ResultType")
 class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
     def __init__(
         self,
-        connection_string: str | AsyncEngine,
+        connection_string: str | AsyncEngine | Engine,
         keep_results: bool = True,
         table_name: str = "taskiq_results",
         serializer: TaskiqSerializer | None = None,
@@ -35,8 +40,12 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         super().__init__()
 
         if isinstance(connection_string, str):
-            connection_string = create_async_engine(connection_string)
+            try:
+                connection_string = create_async_engine(connection_string)
+            except sqlalchemy.exc.InvalidRequestError:
+                connection_string = create_engine(connection_string)
         self.engine = connection_string
+
         self.serializer = serializer or PickleSerializer()
         self.keep_results = keep_results
 
@@ -57,8 +66,13 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
 
         Creates the result table if it does not exist.
         """
-        async with self.engine.begin() as conn:
-            await conn.run_sync(lambda c: self.db_base.metadata.create_all(c))
+
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                self.db_base.metadata.create_all(conn)
+        else:
+            async with self.engine.begin() as conn:
+                await conn.run_sync(lambda c: self.db_base.metadata.create_all(c))
 
         await super().startup()
 
@@ -72,15 +86,20 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
             result: result of the task
         """
         result_bytes = self.serializer.dumpb(model_dump(result))
-        async with self.engine.begin() as conn:
-            await conn.execute(
-                sa.insert(self.model).values(
-                    {
-                        self.model.task_id: task_id,
-                        self.model.result: result_bytes,
-                    }
-                )
-            )
+
+        insert_statement = sa.insert(self.model).values(
+            {
+                self.model.task_id: task_id,
+                self.model.result: result_bytes,
+            }
+        )
+
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                conn.execute(insert_statement)
+        else:
+            async with self.engine.begin() as conn:
+                await conn.execute(insert_statement)
 
     @override
     async def get_result(
@@ -100,25 +119,32 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         Returns:
             TaskiqResult
         """
-        async with self.engine.begin() as conn:
-            stmt = (
-                sa.select(self.model.result)
-                .where(self.model.task_id == task_id)
-                .limit(1)
-            )
-            result_bytes = (await conn.execute(stmt)).scalar_one_or_none()
-            if result_bytes is None:
-                raise ValueError(f"Result not found for task with id {task_id}")
+        select_statement = sa.select(self.model.result).where(
+            self.model.task_id == task_id
+        )
+        delete_statement = sa.delete(self.model).where(self.model.task_id == task_id)
 
-            result_deserialized = self.serializer.loadb(result_bytes)
-            result = model_validate(TaskiqResult[_ResultType], result_deserialized)
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                result_bytes = conn.execute(select_statement).scalar_one_or_none()
 
-            if not self.keep_results:
-                await conn.execute(
-                    sa.delete(self.model).where(self.model.task_id == task_id)
-                )
+                if not self.keep_results:
+                    conn.execute(delete_statement)
+        else:
+            async with self.engine.begin() as conn:
+                result_bytes = (
+                    await conn.execute(select_statement)
+                ).scalar_one_or_none()
 
-            return result
+                if not self.keep_results:
+                    await conn.execute(delete_statement)
+
+        if result_bytes is None:
+            raise ValueError(f"Result not found for task with id {task_id}")
+
+        result_deserialized = self.serializer.loadb(result_bytes)
+        result = model_validate(TaskiqResult[_ResultType], result_deserialized)
+        return result
 
     @override
     async def is_result_ready(self, task_id: str) -> bool:
@@ -131,12 +157,16 @@ class SQLAlchemyResultBackend(AsyncResultBackend[_ResultType]):
         Returns:
             `True` if the result is ready `False` otherwise
         """
-        async with self.engine.begin() as conn:
-            num_rows = (
-                await conn.execute(
-                    sa.select(sa.func.count())
-                    .select_from(self.model)
-                    .where(self.model.task_id == task_id)
-                )
-            ).scalar_one()
-            return num_rows > 0
+        count_statement = (
+            sa.select(sa.func.count())
+            .select_from(self.model)
+            .where(self.model.task_id == task_id)
+        )
+        if isinstance(self.engine, Engine):
+            with self.engine.begin() as conn:
+                num_rows = conn.execute(count_statement).scalar_one()
+        else:
+            async with self.engine.begin() as conn:
+                num_rows = (await conn.execute(count_statement)).scalar_one()
+
+        return num_rows > 0

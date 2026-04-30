@@ -2,6 +2,7 @@ import secrets
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 from taskiq import AsyncBroker, InMemoryBroker
 from taskiq.exceptions import ResultGetError
@@ -25,24 +26,30 @@ async def broker_no_keep(db_engine):
     return await _broker(db_engine, False)
 
 
+async def get_table_list(db_engine: AsyncEngine | Engine):
+    meta = sa.MetaData()
+    if isinstance(db_engine, Engine):
+        meta.reflect(db_engine)
+    else:
+        async with db_engine.connect() as conn:
+            await conn.run_sync(meta.reflect)
+    return meta.tables
+
+
 async def test_result_table_created(db_engine: AsyncEngine):
     table_name = secrets.token_hex(16)
     backend = SQLAlchemyResultBackend(db_engine, table_name=table_name)
 
     # get list of tables
-    async with db_engine.connect() as conn:
-        meta = sa.MetaData()
+    tables = await get_table_list(db_engine)
+    assert tables.get(table_name) is None
 
-        # check table does not already exist
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is None
+    # WHEN: startup called
+    await backend.startup()
 
-        # WHEN: startup called
-        await backend.startup()
-
-        # THEN: table created
-        await conn.run_sync(meta.reflect)
-        assert meta.tables.get(table_name) is not None
+    # THEN: table created
+    tables = await get_table_list(db_engine)
+    assert tables.get(table_name) is not None
 
 
 async def test_result_stored(broker_keep: AsyncBroker):
